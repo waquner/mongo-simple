@@ -21,7 +21,7 @@ function parseDefString(str) {
   return str;
 }
 function makeServer(def, opts) {
-  return new mongo.Db(def.host, def.port, opts);
+  return new mongo.Server(def.host, def.port, opts);
 }
 function makeDefinition(def) {
   def = ('object' == typeof def) ? def : parseDefString(def);
@@ -44,13 +44,15 @@ function makeDefinition(def) {
     def.options = def.options || { auto_reconnect:true };
     def = makeServer(def, def.options);
   }
+  return def;
 }
 function database(def, name) {
   var ctx = {
     name:String(name),
     timeout:(def.timeout || 30) * 1000,
     user:def.username,
-    pass:def.password
+    pass:def.password,
+    emitter:new EventEmitter()
   };
   var obj = {};
 
@@ -60,6 +62,7 @@ function database(def, name) {
   Object.defineProperty(ctx, 'auth', { value:database.auth.bind(obj, ctx) });
   Object.defineProperty(ctx, 'connect', { value:database.connect.bind(obj, ctx) });
   Object.defineProperty(ctx, 'close', { value:database.close.bind(obj, ctx) });
+  Object.defineProperty(ctx, 'emit', { value:ctx.emitter.emit.bind(ctx.emitter) });
 
   Object.defineProperty(obj, 'name', { value:ctx.name });
   Object.defineProperty(obj, 'find', { value:database.find.bind(obj, ctx) });
@@ -69,6 +72,7 @@ function database(def, name) {
   Object.defineProperty(obj, 'remove', { value:database.remove.bind(obj, ctx) });
   Object.defineProperty(obj, 'file', { value:database.file.bind(obj, ctx) });
   Object.defineProperty(obj, 'unlink', { value:database.unlink.bind(obj, ctx) });
+  Object.defineProperty(obj, 'on', { value:ctx.emitter.on.bind(ctx.emitter) });
 
   return obj;
 }
@@ -84,12 +88,17 @@ database.open = function open(ctx, callback) {
     ctx.retime();
     return callback(undefined, ctx.db);
   }
+  if (ctx.opening) {
+    return setTimeout(ctx.open.bind(ctx, callback), 1000);
+  }
+  ctx.opening = true;
   var op = retry();
   op.attempt(function(attempt) {
-    var db = ctx.define();
+    var db = mongo.Db(ctx.name, ctx.define(), {});
     db.open(function(err, db) {
-      if (retry.retry(err)) return ctx.emit('debug', err);
-      err = retry.mainError();
+      if (op.retry(err)) return ctx.emit('debug', err);
+      err = op.mainError();
+      ctx.opening=false;
       if (err) ctx.emit('error', err);
       if (db) ctx.retime();
       return callback(err, db);
@@ -99,13 +108,13 @@ database.open = function open(ctx, callback) {
 database.auth = function auth(ctx, callback) {
   ctx.open(function opened(err, db) {
     if (err) return callback(err);
-    if (!dbuser) return callback(undefined, db);
+    if (!ctx.user) return callback(undefined, db);
     var op = retry();
     op.attempt(function(attempt) {
       ctx.retime();
       db.authenticate(ctx.user, ctx.pass, function(err) {
-        if (retry.retry(err)) return ctx.emit('debug', err);
-        err = retry.mainError();
+        if (op.retry(err)) return ctx.emit('debug', err);
+        err = op.mainError();
         if (err) ctx.emit('error', err);
         return callback(err, db);
       });
@@ -116,8 +125,8 @@ database.connect = function connect(ctx, callback) {
   var op = retry();
   op.attempt(function(attempt) {
     ctx.auth(function(err, db) {
-      if (retry.retry(err)) return ctx.emit('debug', err);
-      err = retry.mainError();
+      if (op.retry(err)) return ctx.emit('debug', err);
+      err = op.mainError();
       if (err) ctx.emit('error', err);
       ctx.retime();
       return callback(err, ctx.db=db);
@@ -137,24 +146,24 @@ database.find = function find(ctx, collection, query, fields, callback) {
     fields:fields
   };
   var hdl = makeHandle(opctx, callback);
-  Object.defineProperty(ctx, 'run', { value:database.find.run.bind(hdl, opctx) });
-  process.nextTick(ctx.run);
+  Object.defineProperty(opctx, 'run', { value:database.find.run.bind(hdl, opctx) });
+  process.nextTick(opctx.run);
   return hdl;
 };
 database.find.run = function run(ctx) {
   var op = retry();
   op.attempt(function(attempt) {
     ctx.dbctx.connect(function(err, db) {
-      if (retry.retry(err)) return ctx.dbctx.emit('debug', err);
-      err = retry.mainError();
+      if (op.retry(err)) return ctx.dbctx.emit('debug', err);
+      err = op.mainError();
       if (err) {
         ctx.dbctx.emit('error', err);
         ctx.complete(err);
         return;
       }
       db.collection(ctx.collection, function(err, coll) {
-        if (retry.retry(err)) return ctx.dbctx.emit('debug', err);
-        err = retry.mainError();
+        if (op.retry(err)) return ctx.dbctx.emit('debug', err);
+        err = op.mainError();
         if (err) {
           ctx.dbctx.emit('error', err);
           ctx.complete(err);
@@ -174,24 +183,24 @@ database.update = function update(ctx, collection, query, document, callback) {
     document:document
   };
   var hdl = makeHandle(opctx, callback);
-  Object.defineProperty(ctx, 'run', { value:database.find.run.bind(hdl, opctx) });
-  process.nextTick(ctx.run);
+  Object.defineProperty(opctx, 'run', { value:database.find.run.bind(hdl, opctx) });
+  process.nextTick(opctx.run);
   return hdl;
 };
 database.update.run = function run(ctx) {
   var op = retry();
   op.attempt(function(attempt) {
     ctx.dbctx.connect(function(err, db) {
-      if (retry.retry(err)) return ctx.dbctx.emit('debug', err);
-      err = retry.mainError();
+      if (op.retry(err)) return ctx.dbctx.emit('debug', err);
+      err = op.mainError();
       if (err) {
         ctx.dbctx.emit('error', err);
         ctx.complete(err);
         return;
       }
       db.collection(ctx.collection, function(err, coll) {
-        if (retry.retry(err)) return ctx.dbctx.emit('debug', err);
-        err = retry.mainError();
+        if (op.retry(err)) return ctx.dbctx.emit('debug', err);
+        err = op.mainError();
         if (err) {
           ctx.dbctx.emit('error', err);
           ctx.complete(err);
@@ -211,24 +220,24 @@ database.upsert = function upsert(ctx, collection, query, document, callback) {
     document:document
   };
   var hdl = makeHandle(opctx, callback);
-  Object.defineProperty(ctx, 'run', { value:database.find.run.bind(hdl, opctx) });
-  process.nextTick(ctx.run);
+  Object.defineProperty(opctx, 'run', { value:database.find.run.bind(hdl, opctx) });
+  process.nextTick(opctx.run);
   return hdl;
 };
 database.upsert.run = function run(ctx) {
   var op = retry();
   op.attempt(function(attempt) {
     ctx.dbctx.connect(function(err, db) {
-      if (retry.retry(err)) return ctx.dbctx.emit('debug', err);
-      err = retry.mainError();
+      if (op.retry(err)) return ctx.dbctx.emit('debug', err);
+      err = op.mainError();
       if (err) {
         ctx.dbctx.emit('error', err);
         ctx.complete(err);
         return;
       }
       db.collection(ctx.collection, function(err, coll) {
-        if (retry.retry(err)) return ctx.dbctx.emit('debug', err);
-        err = retry.mainError();
+        if (op.retry(err)) return ctx.dbctx.emit('debug', err);
+        err = op.mainError();
         if (err) {
           ctx.dbctx.emit('error', err);
           ctx.complete(err);
@@ -247,24 +256,24 @@ database.insert = function insert(ctx, collection, document, callback) {
     document:document
   };
   var hdl = makeHandle(opctx, callback);
-  Object.defineProperty(ctx, 'run', { value:database.find.run.bind(hdl, opctx) });
-  process.nextTick(ctx.run);
+  Object.defineProperty(opctx, 'run', { value:database.insert.run.bind(hdl, opctx) });
+  process.nextTick(opctx.run);
   return hdl;
 };
 database.insert.run = function run(ctx) {
   var op = retry();
   op.attempt(function(attempt) {
     ctx.dbctx.connect(function(err, db) {
-      if (retry.retry(err)) return ctx.dbctx.emit('debug', err);
-      err = retry.mainError();
+      if (op.retry(err)) return ctx.dbctx.emit('debug', err);
+      err = op.mainError();
       if (err) {
         ctx.dbctx.emit('error', err);
         ctx.complete(err);
         return;
       }
       db.collection(ctx.collection, function(err, coll) {
-        if (retry.retry(err)) return ctx.dbctx.emit('debug', err);
-        err = retry.mainError();
+        if (op.retry(err)) return ctx.dbctx.emit('debug', err);
+        err = op.mainError();
         if (err) {
           ctx.dbctx.emit('error', err);
           ctx.complete(err);
@@ -283,24 +292,24 @@ database.remove = function remove(ctx, collection, query, callback) {
     query:query
   };
   var hdl = makeHandle(opctx, callback);
-  Object.defineProperty(ctx, 'run', { value:database.find.run.bind(hdl, opctx) });
-  process.nextTick(ctx.run);
+  Object.defineProperty(opctx, 'run', { value:database.find.run.bind(hdl, opctx) });
+  process.nextTick(opctx.run);
   return hdl;
 };
 database.remove.run = function run(ctx) {
   var op = retry();
   op.attempt(function(attempt) {
     ctx.connect(function(err, db) {
-      if (retry.retry(err)) return ctx.emit('debug', err);
-      err = retry.mainError();
+      if (op.retry(err)) return ctx.emit('debug', err);
+      err = op.mainError();
       if (err) {
         ctx.emit('error', err);
         ctx.complete(err);
         return;
       }
       db.collection(ctx.collection, function(err, coll) {
-        if (retry.retry(err)) return ctx.dbctx.emit('debug', err);
-        err = retry.mainError();
+        if (op.retry(err)) return ctx.dbctx.emit('debug', err);
+        err = op.mainError();
         if (err) {
           ctx.dbctx.emit('error', err);
           ctx.complete(err);
@@ -320,8 +329,8 @@ database.file = function file(ctx, name, meta, callback) {
     meta:meta||{}
   };
   var hdl = makeHandle(opctx, callback);
-  Object.defineProperty(ctx, 'run', { value:database.file.run.bind(hdl, opctx) });
-  process.nextTick(ctx.run);
+  Object.defineProperty(opctx, 'run', { value:database.file.run.bind(hdl, opctx) });
+  process.nextTick(opctx.run);
   return hdl;
 };
 database.file.run = function run(ctx) {
@@ -329,8 +338,8 @@ database.file.run = function run(ctx) {
   var op = retry();
   op.attempt(function(attempt) {
     ctx.connect(function(err, db) {
-      if (retry.retry(err)) return ctx.dbctx.emit('debug', err);
-      err = retry.mainError();
+      if (op.retry(err)) return ctx.dbctx.emit('debug', err);
+      err = op.mainError();
       if (err) {
         ctx.dbctx.emit('error', err);
         ctx.complete(err);
@@ -338,8 +347,8 @@ database.file.run = function run(ctx) {
       }
       var store = new mongo.GridStore(db, ctx.name, ctx.mode, ctx.meta);
       store.open(function (err, store) {
-        if (retry.retry(err)) return ctx.dbctx.emit('debug', err);
-        err = retry.mainError();
+        if (op.retry(err)) return ctx.dbctx.emit('debug', err);
+        err = op.mainError();
         ctx.store = store;
         ctx.dbctx.retime();
         Object.defineProperty(gshdl, 'size', { value:store.size });
@@ -373,24 +382,24 @@ database.unlink = function unlink(ctx, name, callback) {
     name:name
   };
   var hdl = makeHandle(opctx, callback);
-  Object.defineProperty(ctx, 'run', { value:database.unlink.run.bind(hdl, opctx) });
-  process.nextTick(ctx.run);
+  Object.defineProperty(opctx, 'run', { value:database.unlink.run.bind(hdl, opctx) });
+  process.nextTick(opctx.run);
   return hdl;
 };
 database.unlink.run = function (ctx) {
   var op = retry();
   op.attempt(function(attempt) {
     ctx.connect(function(err, db) {
-      if (retry.retry(err)) return ctx.dbctx.emit('debug', err);
-      err = retry.mainError();
+      if (op.retry(err)) return ctx.dbctx.emit('debug', err);
+      err = op.mainError();
       if (err) {
         ctx.dbctx.emit('error', err);
         ctx.complete(err);
         return;
       }
       mongodb.GridStore.unlink(db, ctx.name, function(err) {
-        if (retry.retry(err)) return ctx.dbctx.emit('debug', err);
-        ctx.complete(retry.mainError());
+        if (op.retry(err)) return ctx.dbctx.emit('debug', err);
+        ctx.complete(op.mainError());
       });
     });
   });
@@ -471,13 +480,13 @@ WriteStream.destroySoon = function destroySoon(ctx) {
 };
 
 function makeHandle(ctx, callback) {
-  var handle = { done:[], fail:[], always:[], emitter:new EventEmitter() };
+  var handle = { done:[], fail:[], always:[], emitter: new EventEmitter() };
   var obj = {};
   Object.defineProperty(obj, 'done', { value:makeHandle.register.bind(obj, ctx, handle.done ) });
   Object.defineProperty(obj, 'fail', { value:makeHandle.register.bind(obj, ctx, handle.fail ) });
   Object.defineProperty(obj, 'always', { value:makeHandle.register.bind(obj, ctx, handle.always ) });
-  Object.defineProperty(obj, 'on', { value:ctx.emitter.on.bind(ctx.emitter) });
-  Object.defineProperty(ctx, 'emit', { value:ctx.emitter.emit.bind(ctx.emitter) });
+  Object.defineProperty(obj, 'on', { value:handle.emitter.on.bind(ctx.emitter) });
+  Object.defineProperty(ctx, 'emit', { value:handle.emitter.emit.bind(ctx.emitter) });
   Object.defineProperty(ctx, 'complete', { value:makeHandle.complete.bind(obj, ctx, handle) });
   return obj.always(callback);
 }
