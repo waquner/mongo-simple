@@ -2,9 +2,14 @@
   "name":"mongo-simple",
   "version":"0.1.0",
   "description":"A much simpler interface to mongodb",
+  "author":{ "name":"Philipp Dunkel", "email":"phidelta@phideltacity.net" },
   "main":"mongo.js",
   "dependencies":{
     "mongodb":"*",
     "retry":"*"
+  },
+  "repository":{
+    "type":"git",
+    "url":"https://github.com/phidelta/mongo-simple.git"
   }
 }
