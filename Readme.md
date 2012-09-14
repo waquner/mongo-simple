@@ -1,5 +1,13 @@
 # Mongo Simple
 
+## Status
+
+This module is currently being tested. There is likely so many bugs, that it's not even funny.
+
+**DO NOT USE THIS ANYWHERE NEAR PRODUCTION!**
+
+You have been warned!
+
 ## Install
 
     npm install mongo-simple
