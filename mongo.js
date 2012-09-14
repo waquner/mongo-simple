@@ -89,7 +89,7 @@ database.open = function open(ctx, callback) {
     return callback(undefined, ctx.db);
   }
   if (ctx.opening) {
-    return setTimeout(ctx.open.bind(ctx, callback), 1000);
+    return setTimeout(ctx.open.bind(ctx, callback), 250);
   }
   ctx.opening = true;
   var op = retry();
