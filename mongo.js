@@ -96,6 +96,7 @@ database.open = function open(ctx, callback) {
   op.attempt(function(attempt) {
     var db = mongo.Db(ctx.name, ctx.define(), {});
     db.open(function(err, db) {
+      if (err) { console.error(err.stack); } else { console.error('OPENED'); }
       if (op.retry(err)) return ctx.emit('debug', err);
       err = op.mainError();
       ctx.opening=false;
@@ -113,6 +114,7 @@ database.auth = function auth(ctx, callback) {
     op.attempt(function(attempt) {
       ctx.retime();
       db.authenticate(ctx.user, ctx.pass, function(err) {
+        if (err) { console.error(err.stack); } else { console.error('AUTHED'); }
         if (op.retry(err)) return ctx.emit('debug', err);
         err = op.mainError();
         if (err) ctx.emit('error', err);
@@ -125,6 +127,7 @@ database.connect = function connect(ctx, callback) {
   var op = retry();
   op.attempt(function(attempt) {
     ctx.auth(function(err, db) {
+      if (err) { console.error(err.stack); } else { console.error('CONNECTED'); }
       if (op.retry(err)) return ctx.emit('debug', err);
       err = op.mainError();
       if (err) ctx.emit('error', err);
@@ -408,19 +411,19 @@ database.unlink.run = function (ctx) {
 function cursor(coll, retime, query, fields) {
   var ctx = {
     collection:coll,
-    retime:retime,
-    cursor:db.find(query, fields)
+    retime:retime
   };
+  ctx.cursor = fields ? coll.find(query, fields) : coll.find(query);
   var obj = {};
-  Object.defineProperty(obj, 'skip', { value:ctx.cursor.skip.bind(ctx.cursor) });
-  Object.defineProperty(obj, 'limit', { value:ctx.cursor.limit.bind(ctx.cursor) });
-  Object.defineProperty(obj, 'sort', { value:ctx.cursor.sort.bind(ctx.cursor) });
+  Object.defineProperty(obj, 'skip', { value:cursor.proxySelf.bind(obj, ctx, ctx.cursor.skip) });
+  Object.defineProperty(obj, 'limit', { value:cursor.proxySelf.bind(obj, ctx, ctx.cursor.limit) });
+  Object.defineProperty(obj, 'sort', { value:cursor.proxySelf.bind(obj, ctx, ctx.cursor.sort) });
 
   Object.defineProperty(obj, 'nextObject', { value:cursor.proxy.bind(obj, ctx, ctx.cursor.nextObject) });
-  Object.defineProperty(obj, 'next', { value:obj.next });
+  Object.defineProperty(obj, 'next', { value:obj.nextObject });
   Object.defineProperty(obj, 'rewind', { value:cursor.proxy.bind(obj, ctx, ctx.cursor.rewind) });
   Object.defineProperty(obj, 'toArray', { value:cursor.proxy.bind(obj, ctx, ctx.cursor.toArray) });
-  Object.defineProperty(obj, 'array', { value:obj.array });
+  Object.defineProperty(obj, 'array', { value:obj.toArray });
   Object.defineProperty(obj, 'each', { value:cursor.proxy.bind(obj, ctx, ctx.cursor.each) });
 
   return obj;
@@ -428,6 +431,11 @@ function cursor(coll, retime, query, fields) {
 cursor.proxy = function proxy(ctx, fn) {
   ctx.retime();
   return fn.apply(ctx.cursor, Array.prototype.slice.call(arguments, 2));
+};
+cursor.proxySelf = function proxy(ctx, fn) {
+  ctx.retime();
+  fn.apply(ctx.cursor, Array.prototype.slice.call(arguments, 2));
+  return this;
 };
 
 function WriteStream(store, retime) {
