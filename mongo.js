@@ -340,7 +340,7 @@ database.file.run = function run(ctx) {
   var gshdl = this;
   var op = retry();
   op.attempt(function(attempt) {
-    ctx.connect(function(err, db) {
+    ctx.dbctx.connect(function(err, db) {
       if (op.retry(err)) return ctx.dbctx.emit('debug', err);
       err = op.mainError();
       if (err) {
@@ -378,6 +378,7 @@ database.file.read = function(ctx) {
   var data=[];
   var stream = ctx.store.stream(true);
   stream.on('data', ctx.dbctx.retime);
+  return stream;
 };
 database.unlink = function unlink(ctx, name, callback) {
   var opctx = {
@@ -449,21 +450,33 @@ function WriteStream(store, retime) {
   Object.defineProperty(obj, 'destroy', { value:obj.close });
   Object.defineProperty(obj, 'destroySoon', { value:WriteStream.destroySoon.bind(obj, ctx) });
   Object.defineProperty(obj, 'on', { value:ctx.emitter.on.bind(ctx.emitter) });
+  Object.defineProperty(obj, 'emit', { value:ctx.emitter.emit.bind(ctx.emitter) });
+  Object.defineProperty(obj, 'removeListener', { value:ctx.emitter.removeListener.bind(ctx.emitter) });
+  Object.defineProperty(obj, 'removeAllListeners', { value:ctx.emitter.removeAllListeners.bind(ctx.emitter) });
+  Object.defineProperty(obj, 'addListener', { value:ctx.emitter.addListener.bind(ctx.emitter) });
+  Object.defineProperty(obj, 'listeners', { value:ctx.emitter.listeners.bind(ctx.emitter) });
+  Object.defineProperty(obj, 'setMaxListeners', { value:ctx.emitter.setMaxListeners.bind(ctx.emitter) });
+  Object.defineProperty(obj, 'once', { value:ctx.emitter.once.bind(ctx.emitter) });
   Object.defineProperty(ctx, 'emit', { value:ctx.emitter.emit.bind(ctx.emitter) });
-
+  obj.on('pipe', WriteStream.piped.bind(obj, ctx));
+  //obj.on('drain', console.log.bind(console,'DRAINED!'));
   return obj;
 }
 WriteStream.writable = function writable(ctx) {
   return ctx.writable;
 };
 WriteStream.write = function write(ctx, data, encoding) {
+  //console.error('WRITE '+data.length);
   data = Buffer.isBuffer(data) ? data : new Buffer(data,encoding);
   ctx.retime();
   ctx.store.write(data, function(err) {
-    if (err) return ctx.emit('error', err);
-    ctx.emit('drain');
+    if (err) {
+      //console.error(err.stack);
+      return ctx.emit('error', err);
+    }
+    //ctx.emit('drain');
   });
-  return false;
+  return true;
 };
 WriteStream.end = function end(ctx, data, encoding) {
   if (data) {
@@ -485,6 +498,10 @@ WriteStream.close = function close(ctx) {
 WriteStream.destroySoon = function destroySoon(ctx) {
   // Who ever calls this?
   ctx.retime();
+};
+WriteStream.piped = function piped(ctx, src) {
+  //src.on('data', this.write);
+  //src.on('end', this.end);
 };
 
 function makeHandle(ctx, callback) {
