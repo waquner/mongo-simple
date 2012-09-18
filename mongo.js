@@ -96,7 +96,7 @@ database.open = function open(ctx, callback) {
   op.attempt(function(attempt) {
     var db = mongo.Db(ctx.name, ctx.define(), {});
     db.open(function(err, db) {
-      if (err) { console.error(err.stack); } else { console.error('OPENED'); }
+      //if (err) { console.error(err.stack); } else { console.error('OPENED'); }
       if (op.retry(err)) return ctx.emit('debug', err);
       err = op.mainError();
       ctx.opening=false;
@@ -114,7 +114,7 @@ database.auth = function auth(ctx, callback) {
     op.attempt(function(attempt) {
       ctx.retime();
       db.authenticate(ctx.user, ctx.pass, function(err) {
-        if (err) { console.error(err.stack); } else { console.error('AUTHED'); }
+        //if (err) { console.error(err.stack); } else { console.error('AUTHED'); }
         if (op.retry(err)) return ctx.emit('debug', err);
         err = op.mainError();
         if (err) ctx.emit('error', err);
@@ -127,7 +127,7 @@ database.connect = function connect(ctx, callback) {
   var op = retry();
   op.attempt(function(attempt) {
     ctx.auth(function(err, db) {
-      if (err) { console.error(err.stack); } else { console.error('CONNECTED'); }
+      //if (err) { console.error(err.stack); } else { console.error('CONNECTED'); }
       if (op.retry(err)) return ctx.emit('debug', err);
       err = op.mainError();
       if (err) ctx.emit('error', err);
