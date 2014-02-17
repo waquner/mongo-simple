@@ -7,6 +7,8 @@ module.exports = database;
 var mongo = require('mongodb');
 var EventEmitter = require('events').EventEmitter;
 var retry = require('retry').operation;
+//var domain=require('domain').create;
+var retrySettings={ retries:3, factor:1, minTimeout:1000 };
 
 function parseDefString(str) {
   str=String(str || undefined);
@@ -37,7 +39,7 @@ function makeDefinition(def) {
       return makeServer(sdef, def.options);
     });
     def.options = def.options || { auto_reconnect:true };
-    def = new mongo.ReplSetServers(ctx.config.servers.map(makeServer), { rs_name:def.replset });
+    def = new mongo.ReplSetServers(def.servers, { rs_name:def.replset });
   } else {
     def.port = def.port || 27017;
     if (!def.host || isNaN(def.port)) throw new Error('Invalid Database Definition (bad servers)');
@@ -49,11 +51,12 @@ function makeDefinition(def) {
 function database(def, name) {
   var ctx = {
     name:String(name),
-    timeout:(def.timeout || 30) * 1000,
+    timeout:(def.timeout || 60) * 1000,
     user:def.username,
     pass:def.password,
     emitter:new EventEmitter()
   };
+
   var obj = {};
 
   Object.defineProperty(ctx, 'define', { value:database.define.bind(obj, ctx, def) });
@@ -66,12 +69,14 @@ function database(def, name) {
 
   Object.defineProperty(obj, 'name', { value:ctx.name });
   Object.defineProperty(obj, 'find', { value:database.find.bind(obj, ctx) });
+  Object.defineProperty(obj, 'aggregate', { value:database.aggregate.bind(obj, ctx) });
   Object.defineProperty(obj, 'update', { value:database.update.bind(obj, ctx) });
   Object.defineProperty(obj, 'upsert', { value:database.upsert.bind(obj, ctx) });
   Object.defineProperty(obj, 'insert', { value:database.insert.bind(obj, ctx) });
   Object.defineProperty(obj, 'remove', { value:database.remove.bind(obj, ctx) });
   Object.defineProperty(obj, 'file', { value:database.file.bind(obj, ctx) });
   Object.defineProperty(obj, 'unlink', { value:database.unlink.bind(obj, ctx) });
+  Object.defineProperty(obj, 'group', { value:database.group.bind(obj, ctx) });
   Object.defineProperty(obj, 'on', { value:ctx.emitter.on.bind(ctx.emitter) });
 
   return obj;
@@ -80,8 +85,9 @@ database.define = function define(ctx, def) {
   return ctx.srv = makeDefinition(JSON.parse(JSON.stringify(def)));
 };
 database.retime = function retime(ctx) {
-  clearTimeout(ctx.timer);
-  setTimeout(ctx.close, ctx.timeout);
+  if (!ctx.db) return;
+  clearTimeout(ctx.db.mstimer);
+  ctx.db.mstimer=setTimeout(ctx.db.close.bind(ctx.db), ctx.timeout);
 };
 database.open = function open(ctx, callback) {
   if (ctx.db) {
@@ -89,12 +95,14 @@ database.open = function open(ctx, callback) {
     return callback(undefined, ctx.db);
   }
   if (ctx.opening) {
-    return setTimeout(ctx.open.bind(ctx, callback), 250);
+    return setTimeout(ctx.open.bind(ctx, callback), 500);
   }
   ctx.opening = true;
-  var op = retry();
+  var op = retry({ retries:5, factor:1.5, minTimeout:2500 });
   op.attempt(function(attempt) {
+    //console.log('DB-OPEN ',attempt);
     var db = mongo.Db(ctx.name, ctx.define(), {});
+
     db.open(function(err, db) {
       //if (err) { console.error(err.stack); } else { console.error('OPENED'); }
       if (op.retry(err)) return ctx.emit('debug', err);
@@ -109,14 +117,14 @@ database.open = function open(ctx, callback) {
 database.auth = function auth(ctx, callback) {
   ctx.open(function opened(err, db) {
     if (err) return callback(err);
-    if (!ctx.user) return callback(undefined, db);
-    var op = retry();
+    if (!ctx.user || db.authenticated) return callback(undefined, db);
+    var op = retry(retrySettings);
     op.attempt(function(attempt) {
       ctx.retime();
       db.authenticate(ctx.user, ctx.pass, function(err) {
-        //if (err) { console.error(err.stack); } else { console.error('AUTHED'); }
         if (op.retry(err)) return ctx.emit('debug', err);
         err = op.mainError();
+        if (!err) db.authenticated=true;
         if (err) ctx.emit('error', err);
         return callback(err, db);
       });
@@ -124,16 +132,10 @@ database.auth = function auth(ctx, callback) {
   });
 };
 database.connect = function connect(ctx, callback) {
-  var op = retry();
-  op.attempt(function(attempt) {
-    ctx.auth(function(err, db) {
-      //if (err) { console.error(err.stack); } else { console.error('CONNECTED'); }
-      if (op.retry(err)) return ctx.emit('debug', err);
-      err = op.mainError();
-      if (err) ctx.emit('error', err);
-      ctx.retime();
-      return callback(err, ctx.db=db);
-    });
+  ctx.auth(function(err, db) {
+    if (err) ctx.emit('error', err);
+    ctx.retime();
+    return callback(err, ctx.db=db);
   });
 };
 database.close = function close(ctx) {
@@ -154,17 +156,23 @@ database.find = function find(ctx, collection, query, fields, callback) {
   return hdl;
 };
 database.find.run = function run(ctx) {
-  var op = retry();
-  op.attempt(function(attempt) {
-    ctx.dbctx.connect(function(err, db) {
-      if (op.retry(err)) return ctx.dbctx.emit('debug', err);
-      err = op.mainError();
-      if (err) {
-        ctx.dbctx.emit('error', err);
-        ctx.complete(err);
-        return;
-      }
+  ctx.dbctx.connect(function(err, db) {
+    if (err && ('need to login'===(err.message || String(err))) && ctx.dbctx.db) {
+      ctx.dbctx.db.authenticated = false;
+      return process.nextTick(ctx.run);
+    }
+    if (err) {
+      ctx.dbctx.emit('error', err);
+      ctx.complete(err);
+      return;
+    }
+    var op = retry(retrySettings);
+    op.attempt(function(attempt) {
       db.collection(ctx.collection, function(err, coll) {
+        if (err && ('need to login'===(err.message || String(err))) && ctx.dbctx.db) {
+          ctx.dbctx.db.authenticated = false;
+          return process.nextTick(ctx.run);
+        }
         if (op.retry(err)) return ctx.dbctx.emit('debug', err);
         err = op.mainError();
         if (err) {
@@ -173,7 +181,49 @@ database.find.run = function run(ctx) {
           return;
         }
         ctx.dbctx.retime();
-        ctx.complete(undefined, cursor(coll, ctx.dbctx.retime, ctx.query, ctx.fields));
+        ctx.complete(undefined, cursor(coll, ctx.dbctx, ctx.query, ctx.fields));
+      });
+    });
+  });
+};
+database.aggregate = function aggregate(ctx, collection, pipeline, callback) {
+  var opctx = {
+    dbctx:ctx,
+    collection:collection,
+    pipeline:pipeline
+  };
+  var hdl = makeHandle(opctx, callback);
+  Object.defineProperty(opctx, 'run', { value:database.aggregate.run.bind(hdl, opctx) });
+  process.nextTick(opctx.run);
+  return hdl;
+};
+database.aggregate.run = function run(ctx) {
+  ctx.dbctx.connect(function(err, db) {
+    if (err && ('need to login'===(err.message || String(err))) && ctx.dbctx.db) {
+      ctx.dbctx.db.authenticated = false;
+      return process.nextTick(ctx.run);
+    }
+    if (err) {
+      ctx.dbctx.emit('error', err);
+      ctx.complete(err);
+      return;
+    }
+    var op = retry(retrySettings);
+    op.attempt(function(attempt) {
+      db.collection(ctx.collection, function(err, coll) {
+        if (err && ('need to login'===(err.message || String(err))) && ctx.dbctx.db) {
+          ctx.dbctx.db.authenticated = false;
+          return process.nextTick(ctx.run);
+        }
+        if (op.retry(err)) return ctx.dbctx.emit('debug', err);
+        err = op.mainError();
+        if (err) {
+          ctx.dbctx.emit('error', err);
+          ctx.complete(err);
+          return;
+        }
+        ctx.dbctx.retime();
+        coll.aggregate(ctx.pipeline, {}, ctx.complete.bind(ctx));
       });
     });
   });
@@ -186,22 +236,28 @@ database.update = function update(ctx, collection, query, document, callback) {
     document:document
   };
   var hdl = makeHandle(opctx, callback);
-  Object.defineProperty(opctx, 'run', { value:database.find.run.bind(hdl, opctx) });
+  Object.defineProperty(opctx, 'run', { value:database.update.run.bind(hdl, opctx) });
   process.nextTick(opctx.run);
   return hdl;
 };
 database.update.run = function run(ctx) {
-  var op = retry();
-  op.attempt(function(attempt) {
-    ctx.dbctx.connect(function(err, db) {
-      if (op.retry(err)) return ctx.dbctx.emit('debug', err);
-      err = op.mainError();
-      if (err) {
-        ctx.dbctx.emit('error', err);
-        ctx.complete(err);
-        return;
-      }
+  ctx.dbctx.connect(function(err, db) {
+    if (err && ('need to login'===(err.message || String(err))) && ctx.dbctx.db) {
+      ctx.dbctx.db.authenticated = false;
+      return process.nextTick(ctx.run);
+    }
+    if (err) {
+      ctx.dbctx.emit('error', err);
+      ctx.complete(err);
+      return;
+    }
+    var op = retry(retrySettings);
+    op.attempt(function(attempt) {
       db.collection(ctx.collection, function(err, coll) {
+        if (err && ('need to login'===(err.message || String(err))) && ctx.dbctx.db) {
+          ctx.dbctx.db.authenticated = false;
+          return process.nextTick(ctx.run);
+        }
         if (op.retry(err)) return ctx.dbctx.emit('debug', err);
         err = op.mainError();
         if (err) {
@@ -223,22 +279,28 @@ database.upsert = function upsert(ctx, collection, query, document, callback) {
     document:document
   };
   var hdl = makeHandle(opctx, callback);
-  Object.defineProperty(opctx, 'run', { value:database.find.run.bind(hdl, opctx) });
+  Object.defineProperty(opctx, 'run', { value:database.upsert.run.bind(hdl, opctx) });
   process.nextTick(opctx.run);
   return hdl;
 };
 database.upsert.run = function run(ctx) {
-  var op = retry();
-  op.attempt(function(attempt) {
-    ctx.dbctx.connect(function(err, db) {
-      if (op.retry(err)) return ctx.dbctx.emit('debug', err);
-      err = op.mainError();
-      if (err) {
-        ctx.dbctx.emit('error', err);
-        ctx.complete(err);
-        return;
-      }
+  ctx.dbctx.connect(function(err, db) {
+    if (err && ('need to login'===(err.message || String(err))) && ctx.dbctx.db) {
+      ctx.dbctx.db.authenticated = false;
+      return process.nextTick(ctx.run);
+    }
+    if (err) {
+      ctx.dbctx.emit('error', err);
+      ctx.complete(err);
+      return;
+    }
+    var op = retry(retrySettings);
+    op.attempt(function(attempt) {
       db.collection(ctx.collection, function(err, coll) {
+        if (err && ('need to login'===(err.message || String(err))) && ctx.dbctx.db) {
+          ctx.dbctx.db.authenticated = false;
+          return process.nextTick(ctx.run);
+        }
         if (op.retry(err)) return ctx.dbctx.emit('debug', err);
         err = op.mainError();
         if (err) {
@@ -247,7 +309,9 @@ database.upsert.run = function run(ctx) {
           return;
         }
         ctx.dbctx.retime();
-        coll.update(ctx.query, ctx.document, { safe:true, multi:false, upsert:true }, ctx.complete);
+        coll.update(ctx.query, ctx.document, { safe:true, multi:false, upsert:true }, function(err,val) {
+          ctx.complete(err,val);
+        });
       });
     });
   });
@@ -264,17 +328,23 @@ database.insert = function insert(ctx, collection, document, callback) {
   return hdl;
 };
 database.insert.run = function run(ctx) {
-  var op = retry();
-  op.attempt(function(attempt) {
-    ctx.dbctx.connect(function(err, db) {
-      if (op.retry(err)) return ctx.dbctx.emit('debug', err);
-      err = op.mainError();
-      if (err) {
-        ctx.dbctx.emit('error', err);
-        ctx.complete(err);
-        return;
-      }
+  ctx.dbctx.connect(function(err, db) {
+    if (err && ('need to login'===(err.message || String(err))) && ctx.dbctx.db) {
+      ctx.dbctx.db.authenticated = false;
+      return process.nextTick(ctx.run);
+    }
+    if (err) {
+      ctx.dbctx.emit('error', err);
+      ctx.complete(err);
+      return;
+    }
+    var op = retry(retrySettings);
+    op.attempt(function(attempt) {
       db.collection(ctx.collection, function(err, coll) {
+        if (err && ('need to login'===(err.message || String(err))) && ctx.dbctx.db) {
+          ctx.dbctx.db.authenticated = false;
+          return process.nextTick(ctx.run);
+        }
         if (op.retry(err)) return ctx.dbctx.emit('debug', err);
         err = op.mainError();
         if (err) {
@@ -295,22 +365,28 @@ database.remove = function remove(ctx, collection, query, callback) {
     query:query
   };
   var hdl = makeHandle(opctx, callback);
-  Object.defineProperty(opctx, 'run', { value:database.find.run.bind(hdl, opctx) });
+  Object.defineProperty(opctx, 'run', { value:database.remove.run.bind(hdl, opctx) });
   process.nextTick(opctx.run);
   return hdl;
 };
 database.remove.run = function run(ctx) {
-  var op = retry();
-  op.attempt(function(attempt) {
-    ctx.connect(function(err, db) {
-      if (op.retry(err)) return ctx.emit('debug', err);
-      err = op.mainError();
-      if (err) {
-        ctx.emit('error', err);
-        ctx.complete(err);
-        return;
-      }
+  ctx.dbctx.connect(function(err, db) {
+    if (err && ('need to login'===(err.message || String(err))) && ctx.dbctx.db) {
+      ctx.dbctx.db.authenticated = false;
+      return process.nextTick(ctx.run);
+    }
+    if (err) {
+      ctx.emit('error', err);
+      ctx.complete(err);
+      return;
+    }
+    var op = retry(retrySettings);
+    op.attempt(function(attempt) {
       db.collection(ctx.collection, function(err, coll) {
+        if (err && ('need to login'===(err.message || String(err))) && ctx.dbctx.db) {
+          ctx.dbctx.db.authenticated = false;
+          return process.nextTick(ctx.run);
+        }
         if (op.retry(err)) return ctx.dbctx.emit('debug', err);
         err = op.mainError();
         if (err) {
@@ -318,7 +394,7 @@ database.remove.run = function run(ctx) {
           ctx.complete(err);
           return;
         }
-        ctx.retime();
+        ctx.dbctx.retime();
         coll.remove(ctx.query, { safe:true }, ctx.complete);
       });
     });
@@ -338,18 +414,24 @@ database.file = function file(ctx, name, meta, callback) {
 };
 database.file.run = function run(ctx) {
   var gshdl = this;
-  var op = retry();
-  op.attempt(function(attempt) {
-    ctx.dbctx.connect(function(err, db) {
-      if (op.retry(err)) return ctx.dbctx.emit('debug', err);
-      err = op.mainError();
-      if (err) {
-        ctx.dbctx.emit('error', err);
-        ctx.complete(err);
-        return;
-      }
+  ctx.dbctx.connect(function(err, db) {
+    if (err && ('need to login'===(err.message || String(err))) && ctx.dbctx.db) {
+      ctx.dbctx.db.authenticated = false;
+      return process.nextTick(ctx.run);
+    }
+    if (err) {
+      ctx.dbctx.emit('error', err);
+      ctx.complete(err);
+      return;
+    }
+    var op = retry(retrySettings);
+    op.attempt(function(attempt) {
       var store = new mongo.GridStore(db, ctx.name, ctx.mode, ctx.meta);
       store.open(function (err, store) {
+        if (err && ('need to login'===(err.message || String(err))) && ctx.dbctx.db) {
+          ctx.dbctx.db.authenticated = false;
+          return process.nextTick(ctx.run);
+        }
         if (op.retry(err)) return ctx.dbctx.emit('debug', err);
         err = op.mainError();
         ctx.store = store;
@@ -365,7 +447,6 @@ database.file.run = function run(ctx) {
         }
         ctx.complete(undefined, gshdl);
       });
-
     });
   });
 };
@@ -391,31 +472,84 @@ database.unlink = function unlink(ctx, name, callback) {
   return hdl;
 };
 database.unlink.run = function (ctx) {
-  var op = retry();
-  op.attempt(function(attempt) {
-    ctx.connect(function(err, db) {
-      if (op.retry(err)) return ctx.dbctx.emit('debug', err);
-      err = op.mainError();
-      if (err) {
-        ctx.dbctx.emit('error', err);
-        ctx.complete(err);
-        return;
-      }
+  ctx.connect(function(err, db) {
+    if (err && ('need to login'===(err.message || String(err))) && ctx.dbctx.db) {
+      ctx.dbctx.db.authenticated = false;
+      return process.nextTick(ctx.run);
+    }
+    if (err) {
+      ctx.dbctx.emit('error', err);
+      ctx.complete(err);
+      return;
+    }
+    var op = retry(retrySettings);
+    op.attempt(function(attempt) {
       mongodb.GridStore.unlink(db, ctx.name, function(err) {
+        if (err && ('need to login'===(err.message || String(err))) && ctx.dbctx.db) {
+          ctx.dbctx.db.authenticated = false;
+          return process.nextTick(ctx.run);
+        }
         if (op.retry(err)) return ctx.dbctx.emit('debug', err);
         ctx.complete(op.mainError());
       });
     });
   });
 };
+database.group = function group(ctx, name, keys, condition, reduce, finalize, callback) {
+  var opctx = {
+    dbctx:ctx,
+    name:name,
+    keys:keys,
+    cond:condition,
+    reduce:reduce,
+    finalize:finalize
+  };
 
-function cursor(coll, retime, query, fields) {
+  var hdl = makeHandle(opctx, callback);
+  Object.defineProperty(opctx, 'run', { value:database.group.run.bind(hdl, opctx) });
+  process.nextTick(opctx.run);
+  return hdl;
+};
+database.group.run = function run(ctx) {
+  ctx.dbctx.connect(function(err, db) {
+    if (err && ('need to login'===(err.message || String(err))) && ctx.dbctx.db) {
+      ctx.dbctx.db.authenticated = false;
+      return process.nextTick(ctx.run);
+    }
+    if (err) {
+      ctx.dbctx.emit('error', err);
+      ctx.complete(err);
+      return;
+    }
+    var op = retry();
+    op.attempt(function(attempt) {
+      db.collection(ctx.name, function(err, coll) {
+        if (err && ('need to login'===(err.message || String(err))) && ctx.dbctx.db) {
+          ctx.dbctx.db.authenticated = false;
+          return process.nextTick(ctx.run);
+        }
+        if (op.retry(err)) return ctx.dbctx.emit('debug', err);
+        err = op.mainError();
+        if (err) {
+          ctx.dbctx.emit('error', err);
+          ctx.complete(err);
+          return;
+        }
+        ctx.dbctx.retime();
+        coll.group(ctx.keys, ctx.cond, {}, ctx.reduce, ctx.finalize, true, { safe:true }, ctx.complete);
+      });
+    });
+  });
+};
+
+function cursor(coll, dbctx, query, fields) {
   var ctx = {
     collection:coll,
-    retime:retime
+    retime:dbctx.retime
   };
   ctx.cursor = fields ? coll.find(query, fields) : coll.find(query);
   var obj = {};
+  Object.defineProperty(obj, 'count', { value:cursor.proxySelf.bind(obj, ctx, ctx.cursor.count) });
   Object.defineProperty(obj, 'skip', { value:cursor.proxySelf.bind(obj, ctx, ctx.cursor.skip) });
   Object.defineProperty(obj, 'limit', { value:cursor.proxySelf.bind(obj, ctx, ctx.cursor.limit) });
   Object.defineProperty(obj, 'sort', { value:cursor.proxySelf.bind(obj, ctx, ctx.cursor.sort) });
@@ -458,23 +592,19 @@ function WriteStream(store, retime) {
   Object.defineProperty(obj, 'setMaxListeners', { value:ctx.emitter.setMaxListeners.bind(ctx.emitter) });
   Object.defineProperty(obj, 'once', { value:ctx.emitter.once.bind(ctx.emitter) });
   Object.defineProperty(ctx, 'emit', { value:ctx.emitter.emit.bind(ctx.emitter) });
-  obj.on('pipe', WriteStream.piped.bind(obj, ctx));
-  //obj.on('drain', console.log.bind(console,'DRAINED!'));
+
   return obj;
 }
 WriteStream.writable = function writable(ctx) {
   return ctx.writable;
 };
 WriteStream.write = function write(ctx, data, encoding) {
-  //console.error('WRITE '+data.length);
   data = Buffer.isBuffer(data) ? data : new Buffer(data,encoding);
   ctx.retime();
   ctx.store.write(data, function(err) {
     if (err) {
-      //console.error(err.stack);
       return ctx.emit('error', err);
     }
-    //ctx.emit('drain');
   });
   return true;
 };
@@ -499,10 +629,7 @@ WriteStream.destroySoon = function destroySoon(ctx) {
   // Who ever calls this?
   ctx.retime();
 };
-WriteStream.piped = function piped(ctx, src) {
-  //src.on('data', this.write);
-  //src.on('end', this.end);
-};
+
 
 function makeHandle(ctx, callback) {
   var handle = { done:[], fail:[], always:[], emitter: new EventEmitter() };

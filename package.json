@@ -1,15 +1,30 @@
 {
-  "name":"mongo-simple",
-  "version":"0.1.0",
-  "description":"A much simpler interface to mongodb",
-  "author":{ "name":"Philipp Dunkel", "email":"phidelta@phideltacity.net" },
-  "main":"mongo.js",
-  "dependencies":{
-    "mongodb":"*",
-    "retry":"*"
+  "name": "mongo-simple",
+  "version": "0.1.10",
+  "description": "A much simpler interface to mongodb",
+  "author": {
+    "name": "Philipp Dunkel",
+    "email": "phidelta@phideltacity.net"
   },
-  "repository":{
-    "type":"git",
-    "url":"https://github.com/phidelta/mongo-simple.git"
-  }
+  "main": "mongo.js",
+  "dependencies": {
+    "mongodb": "1.2.14",
+    "retry": "*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/phidelta/mongo-simple.git"
+  },
+  "readme": "# Mongo Simple\n\n## Status\n\nThis module is currently being tested. There is likely so many bugs, that it's not even funny.\n\n**DO NOT USE THIS ANYWHERE NEAR PRODUCTION!**\n\nYou have been warned!\n\n## Install\n\n    npm install mongo-simple\n\n## Usage\n\n### Opening a database\n\n    var simple = require('mongo-simple');\n    var database = simple(serverDefinition, name);\n\nThe server definition can take the following values:\n\n * *username* - Authentication User (optional)\n * *password* - Authentication Password (only with *username*)\n * *timeout* - Seconds to keep the Connection Open (default: 30)\n * *options* - an options object for the connection [see mongodb-native](https://github.com/mongodb/node-mongodb-native) (default: { auto_reconnect:true })\n\nif you are connecting to a single server:\n\n * *host* - The hostname/ip of your mongo server\n * *port* - The port of your mongo server (default: 27017)\n\nif you are connecting to a replication set:\n\n * *replset* - The name of the replication set\n * *servers* - An array of server definitions\n\na server definition is either a string in the format:\n\n    <host>[:<port>]\n\nor an object with the following properties:\n\n * *host* - The hostname/ip of your mongo server\n * *port* - The port of your mongo server (default: 27017)\n\n### The *database* object\n\n**Properties**\n\n * *name* - This reflects the database name you specified when opening the database.\n\nSince Mongo-Simple intended to be simple, it takes care of the entire connection management for you. There are all the usual suspects in terms of operations. There are 2 fundamental ways to interact with the API.\n\n * The jQuery way: calling a function and the either *done()* or *fail()* or *always()* on the return value\n * The NodeJS way: calling a function with a callback that takes an *error* as its first argument\n\nBasically these are equivalent:\n\n    database.find(collenction, query, fields, function(err, cursor) { … });\n    database.find(collenction, query, fields).always(function(err, cursor) { … });\n\nalternatively you could do:\n\n    database.find(collenction, query, fields).fail(function(err) { … }).done(function(cursor) { … });\n\n#### Basic Methods\n\n * database.find(collection, query, fields[, callback]) // options are set as { safe:true }\n * database.update(collection, query, document[, callback]) // options are set as { safe:true, multi:true }\n * database.upsert(collection, query, document[, callback]) // options are set as { safe:true, multi:false, upsert:true }\n * database.insert(collection, document[, callback]) // options are set as { safe:true }\n * database.remove(collection, query[, callback]) // options are set as { safe:true }\n\nThese work the same way as their [mongodb-native](https://github.com/mongodb/node-mongodb-native) equivalents, except that you cannot specify options. Mongo-Simple takes care of those for you.\n\n#### Grid-Store\n\n##### Access\n\nYou can access gridstore files using\n\n * database.file(name, props[, callback])\n\nIf *props* is set, it is assumed that you want to write a file, because there are no properties you could pass to a file you want to read.\n\n*props* is an object that can take the following properties:\n\n * *content_type* - The mime-type of the file\n * *metadata* - an object with meta-data (optional)\n * *chunk_size* - the size of chunks in the db (default:1024)\n\nthe *callback* (or *done* and *always* methods) gets a file object with these properties:\n\n * *size* - Size in bytes (only if opening for reading)\n * *content-type* - the mime-type of the file\n * *metadata* - the metadata object you specified when creating the file\n * *created* - the creation time of the file\n\nin addition the object has a *stream()* method, which returns either a *ReadableStream* or a *WritableStream* depending on how you asked for the file.\n\n##### Deleting\n\nYou can delete Grid-Store files using\n\n * database.unlink(name[, callback])\n\n## License\n\nMIT License\n-----------\n\nCopyright (C) 2012 YOUSURE Tarifvergleich GmbH\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in\nall copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN\nTHE SOFTWARE.\n",
+  "readmeFilename": "Readme.md",
+  "bugs": {
+    "url": "https://github.com/phidelta/mongo-simple/issues"
+  },
+  "homepage": "https://github.com/phidelta/mongo-simple",
+  "_id": "mongo-simple@0.1.10",
+  "dist": {
+    "shasum": "f53bacf34da3bbe141b9c0f401a216a60e097680"
+  },
+  "_resolved": "git+https://github.com/pipobscure/mongo-simple.git#76098a002633315bdcd29e39cb512b7f5c4b027a",
+  "_from": "mongo-simple@git+https://github.com/pipobscure/mongo-simple.git"
 }
